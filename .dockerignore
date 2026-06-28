@@ -1,0 +1,17 @@
+.git
+.github
+node_modules
+__pycache__
+.venv
+venv
+.mypy_cache
+.pytest_cache
+.ruff_cache
+*.pyc
+.env
+.env.*
+!.env.example
+target
+Cargo.lock
+*.tar.gz
+.DS_Store

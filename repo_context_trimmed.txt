@@ -1,0 +1,73 @@
+REPOSITORY FILE TREE:
+./.gitignore
+./README.md
+./bun.lock
+./index.html
+./mise.toml
+./package.json
+./repo_context.txt
+./src/App.svelte
+./src/app.css
+./src/assets/hero.png
+./src/assets/svelte.svg
+./src/assets/vite.svg
+./src/lib/Counter.svelte
+./src/main.ts
+./svelte.config.js
+./tsconfig.app.json
+./tsconfig.json
+./tsconfig.node.json
+./vite.config.ts
+
+KEY CONFIGURATION FILES
+
+--- package.json ---
+{
+  "name": "vite-test",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^7.1.2",
+    "@tsconfig/svelte": "^5.0.8",
+    "@types/node": "^24.12.3",
+    "svelte": "^5.55.5",
+    "svelte-check": "^4.4.8",
+    "typescript": "~6.0.2",
+    "vite": "^8.0.12"
+  }
+}
+
+KNOWN ENTRY POINTS (full contents):
+
+OTHER SOURCE FILES (first 10 lines each):
+
+=== ./src/main.ts ===
+import { mount } from 'svelte'
+import './app.css'
+import App from './App.svelte'
+
+const app = mount(App, {
+  target: document.getElementById('app')!,
+})
+
+export default app
+
+=== ./svelte.config.js ===
+/** @type {import("@sveltejs/vite-plugin-svelte").SvelteConfig} */
+export default {}
+
+=== ./vite.config.ts ===
+import { defineConfig } from 'vite'
+import { svelte } from '@sveltejs/vite-plugin-svelte'
+
+// https://vite.dev/config/
+export default defineConfig({
+  plugins: [svelte()],
+})
