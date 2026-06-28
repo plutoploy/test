@@ -104,10 +104,7 @@ jobs:
       - name: Clean and write Containerfile
         id: clean
         run: |
-          # Remove markdown fences and any leading/trailing noise
           clean=$(echo "$RESPONSE" | sed -e '/^```/d' -e '/^```Containerfile/d' -e '/^```Dockerfile/d')
-
-          # Basic sanity: must contain FROM
           if ! echo "$clean" | grep -qE '^FROM '; then
             echo "ERROR: AI response missing FROM instruction. Raw output:"
             echo "$RESPONSE"
@@ -116,7 +113,7 @@ jobs:
 
           echo "$clean" > Containerfile
         env:
-          RESPONSE: ${{ steps.detect.outputs.response }}
+          RESPONSE: ${{ steps.detect.outputs.content }}
 
       - name: Validate Containerfile structure
         run: |
@@ -159,7 +156,7 @@ jobs:
             echo ".dockerignore already exists"
           fi
 
-      - name: Build-verify Containerfile (optional)
+      - name: Build-verify Containerfile 
         run: |
           if command -v buildah &> /dev/null; then
             buildah bud --layers=false -f Containerfile . && echo "Build verification passed." || {
@@ -185,6 +182,5 @@ jobs:
 
             - ✅ Generated Containerfile and .dockerignore based on repository analysis.
             - 🧪 Build verification (if tools were available): see job logs.
-          branch: plutoploy/containerfile
           base: ${{ github.ref_name }}
           delete-branch: true
