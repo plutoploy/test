@@ -3,25 +3,29 @@ name: plutoploy bot
 on:
   workflow_dispatch:
   push:
-
+    paths-ignore:
+      - 'Containerfile'
+      - 'Dockerfile'
+      - '.dockerignore'
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
-  detect-and-generate:
+  detect-and-inject:
     runs-on: ubuntu-latest
+    if: github.actor != 'plutoploy[bot]'
+
     steps:
       - name: Checkout
         uses: actions/checkout@main
 
-      - name: Check for existing Containerfile
+      - name: Check if Containerfile/Dockerfile already present
         id: existing
         run: |
           if [ -f Containerfile ] || [ -f Dockerfile ]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "NOTE: A Containerfile or Dockerfile already exists in this repository."
+            echo "NOTE: Overwriting existing Containerfile/Dockerfile."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
@@ -30,87 +34,72 @@ jobs:
         id: context
         run: |
           {
-            echo "REPOSITORY FILE TREE:"
-            find . -type f -not -path './.git/*' -not -path './.vscode/*' -not -path './public/*' -not -path './.github/*' | sort | head -150
+            echo "REPOSITORY FILE TREE (top 150 files):"
+            find . -type f -not -path './.git/*' -not -path './.github/*' -not -path './public/*' | sort | head -150
             echo ""
-            echo "KEY CONFIGURATION FILES"
+            echo "KEY CONFIGURATION FILES :"
             for file in package.json requirements.txt pyproject.toml Cargo.toml go.mod pom.xml build.gradle Gemfile composer.json Makefile Justfile Taskfile.yaml; do
               if [ -f "$file" ]; then
-                echo ""
                 echo "--- $file ---"
-                cat "$file"
+                head -c 5000 "$file"
               fi
             done
             echo ""
-            echo "KNOWN ENTRY POINTS (full contents):"
+            echo "ENTRY POINTS (first 5 KB each):"
             for entry in main.py app.py manage.py server.py index.ts server.ts main.go cmd/main.go main.rs src/main.rs src/bin/*.rs src/lib.rs pubspec.yaml Application.java Main.java; do
               if [ -f "$entry" ]; then
-                echo ""
-                echo "=== $entry (FULL) ==="
-                cat "$entry"
+                echo "=== $entry ==="
+                head -c 5000 "$entry"
               fi
             done
             echo ""
-            echo "OTHER SOURCE FILES (first 10 lines each):"
+            echo "OTHER SOURCE FILES (first 10 lines, up to 15 files):"
             find . -type f \( -name "*.py" -o -name "*.js" -o -name "*.ts" -o -name "*.go" -o -name "*.rs" -o -name "*.java" -o -name "*.rb" -o -name "*.php" \) \
               -not -path './.git/*' -not -name "main.py" -not -name "app.py" -not -name "index.ts" -not -name "server.ts" -not -name "main.go" -not -name "main.rs" \
-              | head -15 | while read -r f; do
-                echo ""
+              | head -15 | while IFS= read -r f; do
                 echo "=== $f ==="
                 head -n 10 "$f"
               done
-          } > repo_context.txt
+          } > /tmp/repo_context.txt
 
-          # Truncate at 12KB while keeping whole lines
-          total=0
-          while IFS= read -r line; do
-            linelen=${#line}
-            if [ $((total + linelen + 1)) -le 12000 ]; then
-              echo "$line"
-              total=$((total + linelen + 1))
-            else
-              break
-            fi
-          done < repo_context.txt > repo_context_trimmed.txt
+          # Trim to 12000 bytes while preserving whole lines
+          head -c 12000 /tmp/repo_context.txt > /tmp/repo_context_trimmed.txt
 
           delimiter="EOF_$(date +%s)_$$"
           {
             echo "content<<${delimiter}"
-            cat repo_context_trimmed.txt
+            cat /tmp/repo_context_trimmed.txt
             echo "${delimiter}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Summarize codebase context
-        id: summarize
-        uses: ai-action/ollama-action@master
-        with:
-          model: deepseek-coder-v2:16b
-          prompt: |
-            You are given the following codebase context. Analyze it and return only a short, tech‑focused summary.
-            Context:
-            ${{ steps.context.outputs.content }}
-
-      - name: Generate raw Containerfile
+      - name: Generate raw Containerfile (directly from full context)
         id: detect
         uses: ai-action/ollama-action@master
         with:
           model: deepseek-coder-v2:16b
           prompt: |
-            The project is: ${{ steps.summarize.outputs.content }}
-            Return ONLY a Containerfile to containerize this application.
-            No markdown fences, no commentary, no explanation – just raw Containerfile contents.
-            The Containerfile MUST include a CMD or ENTRYPOINT instruction.
+            You are an expert DevOps engineer. Below is a snapshot of a codebase.
+            Analyse it carefully and produce a Containerfile that correctly builds and runs this application.
 
-      - name: Clean and write Containerfile
+            CODEBASE CONTEXT:
+            ${{ steps.context.outputs.content }}
+
+            IMPORTANT RULES:
+            - Use the most appropriate base image based on the detected language/framework.
+            - Include a CMD or ENTRYPOINT instruction.
+            - Do NOT include any markdown fences, explanations, or commentary.
+            - Output ONLY the raw Containerfile contents.
+
+      - name: Clean the AI response
         id: clean
         run: |
-          clean=$(echo "$RESPONSE" | sed -e '/^```/d' -e '/^```Containerfile/d' -e '/^```Dockerfile/d')
-          if ! echo "$clean" | grep -qE '^FROM '; then
+          # Extract everything from the first FROM line onward, then strip any ``` fences
+          clean=$(echo "$RESPONSE" | sed -n '/^FROM/,$p' | sed '/^```/d')
+          if ! grep -qE '^FROM ' <<< "$clean"; then
             echo "ERROR: AI response missing FROM instruction. Raw output:"
             echo "$RESPONSE"
             exit 1
           fi
-
           echo "$clean" > Containerfile
         env:
           RESPONSE: ${{ steps.detect.outputs.content }}
@@ -120,16 +109,10 @@ jobs:
           echo "--- Containerfile ---"
           cat Containerfile
           echo "--------------------"
-          if ! grep -qE '^FROM ' Containerfile; then
-            echo "ERROR: No FROM instruction found"
-            exit 1
-          fi
-          if ! grep -qE '^(CMD|ENTRYPOINT)' Containerfile; then
-            echo "ERROR: No CMD or ENTRYPOINT instruction found"
-            exit 1
-          fi
+          grep -qE '^FROM ' Containerfile || { echo "ERROR: missing FROM"; exit 1; }
+          grep -qE '^(CMD|ENTRYPOINT)' Containerfile || { echo "ERROR: missing CMD/ENTRYPOINT"; exit 1; }
 
-      - name: Ensure .dockerignore exists
+      - name: Ensure .dockerignore
         run: |
           if [ ! -f .dockerignore ]; then
             cat > .dockerignore << 'EOF'
@@ -153,36 +136,19 @@ jobs:
           EOF
             echo "Created .dockerignore"
           else
-            echo ".dockerignore already exists"
+            echo ".dockerignore already exists – not overwriting."
           fi
 
-      - name: Build-verify Containerfile
+      - name: Commit and push directly
         run: |
-          if command -v buildah &> /dev/null; then
-            buildah bud --layers=false -f Containerfile . && echo "Build verification passed." || {
-              echo "WARNING: Containerfile failed build verification."
-              echo "The file will still be included in the PR for manual review."
-            }
-          elif command -v docker &> /dev/null; then
-            docker build --no-cache -f Containerfile . && echo "Build verification passed." || {
-              echo "WARNING: Containerfile failed build verification."
-              echo "The file will still be included in the PR for manual review."
-            }
+          git config user.name "plutoploy[bot]"
+          git config user.email "plutoploy[bot]@users.noreply.github.com"
+          git add Containerfile .dockerignore
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
           else
-            echo "SKIP: Neither buildah nor docker available for build verification."
+            git commit -m "chore: inject Containerfile and .dockerignore via plutoploy bot"
+            git push
           fi
-
-      - name: Create Pull Request
-        uses: peter-evans/create-pull-request@main
-        with:
-          commit-message: "chore: generate Containerfile via plutoploy bot"
-          title: "chore: add auto-generated Containerfile"
-          body: |
-            This PR was automatically generated by the Plutoploy bot.
-
-            - ✅ Generated Containerfile and .dockerignore based on repository analysis.
-            - 🧪 Build verification (if tools were available): see job logs.
-          base: ${{ github.ref_name }}
-          delete-branch: false
         env:
-            token: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
