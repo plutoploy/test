@@ -84,7 +84,7 @@ jobs:
         id: summarize
         uses: ai-action/ollama-action@master
         with:
-          model: gemma4:12b
+          model: deepseek-coder-v2:16b
           prompt: |
             You are given the following codebase context. Analyze it and return only a short, tech‑focused summary.
             Context:
@@ -94,7 +94,7 @@ jobs:
         id: detect
         uses: ai-action/ollama-action@master
         with:
-          model: gemma4:12b
+          model: deepseek-coder-v2:16b
           prompt: |
             The project is: ${{ steps.summarize.outputs.content }}
             Return ONLY a Containerfile to containerize this application.
@@ -156,7 +156,7 @@ jobs:
             echo ".dockerignore already exists"
           fi
 
-      - name: Build-verify Containerfile 
+      - name: Build-verify Containerfile
         run: |
           if command -v buildah &> /dev/null; then
             buildah bud --layers=false -f Containerfile . && echo "Build verification passed." || {
@@ -183,4 +183,6 @@ jobs:
             - ✅ Generated Containerfile and .dockerignore based on repository analysis.
             - 🧪 Build verification (if tools were available): see job logs.
           base: ${{ github.ref_name }}
-          delete-branch: true
+          delete-branch: false
+        env:
+            token: ${{ github.token }}
