@@ -11,21 +11,20 @@ jobs:
   detect-and-generate:
     runs-on: ubuntu-latest
     steps:
-      - name: checkout
-        uses: actions/checkout@main # v4.2.2
-        with:
-          token: ${{ github.token }}
-      - name: check for existing containerfile
+      - name: Checkout
+        uses: actions/checkout@main
+
+      - name: Check for existing Containerfile
         id: existing
         run: |
-          if [ -f "Containerfile" ] || [ -f "Dockerfile" ]; then
+          if [ -f Containerfile ] || [ -f Dockerfile ]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "NOTE: A Containerfile or Dockerfile already exists in this repository."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: gather codebase context
+      - name: Gather codebase context
         id: context
         run: |
           {
@@ -50,7 +49,7 @@ jobs:
               fi
             done
             echo ""
-            echo "OTHER SOURCE FILES (first 40 lines each):"
+            echo "OTHER SOURCE FILES (first 10 lines each):"
             find . -type f \( -name "*.py" -o -name "*.js" -o -name "*.ts" -o -name "*.go" -o -name "*.rs" -o -name "*.java" -o -name "*.rb" -o -name "*.php" \) \
               -not -path './.git/*' -not -name "main.py" -not -name "app.py" -not -name "index.ts" -not -name "server.ts" -not -name "main.go" -not -name "main.rs" \
               | head -15 | while read -r f; do
@@ -60,7 +59,7 @@ jobs:
               done
           } > repo_context.txt
 
-          # Truncate at line boundary to avoid mid-line cuts
+          # Truncate at 12KB while keeping whole lines
           total=0
           while IFS= read -r line; do
             linelen=${#line}
@@ -76,49 +75,52 @@ jobs:
           {
             echo "content<<${delimiter}"
             cat repo_context_trimmed.txt
-            echo
             echo "${delimiter}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: summarize codebase context
-        uses: ai-action/ollama-action@master
-        with:
-          model: gemma4:12b
-          prompt: >
-            You are given the following codebase context. Analyze it and return the short summarized context (tech related only).
+      - name: Summarize codebase context
         id: summarize
-
-      - name: generate
         uses: ai-action/ollama-action@master
-        id: detect
         with:
           model: gemma4:12b
-          prompt: >
-            Analyze it and return ONLY a Containerfile to containerize this application.
-            No markdown fences, no commentary, no explanation just raw Containerfile contents.
+          prompt: |
+            You are given the following codebase context. Analyze it and return only a short, tech‑focused summary.
+            Context:
+            ${{ steps.context.outputs.content }}
+
+      - name: Generate raw Containerfile
+        id: detect
+        uses: ai-action/ollama-action@master
+        with:
+          model: gemma4:12b
+          prompt: |
+            The project is: ${{ steps.summarize.outputs.content }}
+            Return ONLY a Containerfile to containerize this application.
+            No markdown fences, no commentary, no explanation – just raw Containerfile contents.
             The Containerfile MUST include a CMD or ENTRYPOINT instruction.
-            the project is a ${{ steps.summarize.outputs.content }}
 
-      - name: clean and write Containerfile
-        env:
-          response: ${{ steps.detect.outputs.response }}
+      - name: Clean and write Containerfile
+        id: clean
         run: |
-          clean=$(echo "$response" | sed -e '/^```/d' -e '/^```Containerfile/d' -e '/^```Dockerfile/d')
+          # Remove markdown fences and any leading/trailing noise
+          clean=$(echo "$RESPONSE" | sed -e '/^```/d' -e '/^```Containerfile/d' -e '/^```Dockerfile/d')
 
+          # Basic sanity: must contain FROM
           if ! echo "$clean" | grep -qE '^FROM '; then
             echo "ERROR: AI response missing FROM instruction. Raw output:"
-            echo "$response"
+            echo "$RESPONSE"
             exit 1
           fi
 
           echo "$clean" > Containerfile
+        env:
+          RESPONSE: ${{ steps.detect.outputs.response }}
 
-      - name: validate Containerfile structure
+      - name: Validate Containerfile structure
         run: |
-          echo "---  ---"
+          echo "--- Containerfile ---"
           cat Containerfile
-          echo "------------------------------"
-
+          echo "--------------------"
           if ! grep -qE '^FROM ' Containerfile; then
             echo "ERROR: No FROM instruction found"
             exit 1
@@ -128,34 +130,34 @@ jobs:
             exit 1
           fi
 
-      - name: ensure .dockerignore exists
+      - name: Ensure .dockerignore exists
         run: |
           if [ ! -f .dockerignore ]; then
-            cat > .dockerignore << 'DOCKERIGNORE'
-            .git
-            .github
-            node_modules
-            __pycache__
-            .venv
-            venv
-            .mypy_cache
-            .pytest_cache
-            .ruff_cache
-            *.pyc
-            .env
-            .env.*
-           !.env.example
-            target
-            Cargo.lock
-            *.tar.gz
-            .DS_Store
-            DOCKERIGNORE
+            cat > .dockerignore << 'EOF'
+          .git
+          .github
+          node_modules
+          __pycache__
+          .venv
+          venv
+          .mypy_cache
+          .pytest_cache
+          .ruff_cache
+          *.pyc
+          .env
+          .env.*
+          !.env.example
+          target
+          Cargo.lock
+          *.tar.gz
+          .DS_Store
+          EOF
             echo "Created .dockerignore"
           else
             echo ".dockerignore already exists"
           fi
 
-      - name: verify Containerfile builds
+      - name: Build-verify Containerfile (optional)
         run: |
           if command -v buildah &> /dev/null; then
             buildah bud --layers=false -f Containerfile . && echo "Build verification passed." || {
@@ -171,15 +173,16 @@ jobs:
             echo "SKIP: Neither buildah nor docker available for build verification."
           fi
 
-      - name: create branch and commit
-        id: commit
-        run: |
-          git config user.name "plutoploy-gh[bot]"
-          git config user.email "plutoploy-gh-bot[bot]@users.noreply.github.com"
-          git add Containerfile .dockerignore
-          git diff --cached --quiet && echo "No changes to commit" && echo "changed=false" >> "$GITHUB_OUTPUT" && exit 0
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@main
+        with:
+          commit-message: "chore: generate Containerfile via plutoploy bot"
+          title: "chore: add auto-generated Containerfile"
+          body: |
+            This PR was automatically generated by the Plutoploy bot.
 
-          git commit -m "chore: generate Containerfile via plutoploy bot"
-          git push
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-          # echo "branch=$branch" >> "$GITHUB_OUTPUT"
+            - ✅ Generated Containerfile and .dockerignore based on repository analysis.
+            - 🧪 Build verification (if tools were available): see job logs.
+          branch: plutoploy/containerfile
+          base: ${{ github.ref_name }}
+          delete-branch: true
