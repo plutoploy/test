@@ -3,13 +3,11 @@ name: plutoploy bot
 on:
   workflow_dispatch:
   push:
-    paths-ignore:
-      - 'Containerfile'
-      - 'Dockerfile'
-      - '.dockerignore'
 
 permissions:
   contents: write
+  packages: write
+  id-token: write
 
 jobs:
   detect-and-inject:
@@ -20,135 +18,47 @@ jobs:
       - name: Checkout
         uses: actions/checkout@main
 
-      - name: Check if Containerfile/Dockerfile already present
-        id: existing
-        run: |
-          if [ -f Containerfile ] || [ -f Dockerfile ]; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "NOTE: Overwriting existing Containerfile/Dockerfile."
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Gather codebase context
-        id: context
-        run: |
-          {
-            echo "REPOSITORY FILE TREE (top 150 files):"
-            find . -type f -not -path './.git/*' -not -path './.github/*' -not -path './public/*' | sort | head -150
-            echo ""
-            echo "KEY CONFIGURATION FILES :"
-            for file in package.json requirements.txt pyproject.toml Cargo.toml go.mod pom.xml build.gradle Gemfile composer.json Makefile Justfile Taskfile.yaml; do
-              if [ -f "$file" ]; then
-                echo "--- $file ---"
-                head -c 5000 "$file"
-              fi
-            done
-            echo ""
-            echo "ENTRY POINTS (first 5 KB each):"
-            for entry in main.py app.py manage.py server.py index.ts server.ts main.go cmd/main.go main.rs src/main.rs src/bin/*.rs src/lib.rs pubspec.yaml Application.java Main.java; do
-              if [ -f "$entry" ]; then
-                echo "=== $entry ==="
-                head -c 5000 "$entry"
-              fi
-            done
-            echo ""
-            echo "OTHER SOURCE FILES (first 10 lines, up to 15 files):"
-            find . -type f \( -name "*.py" -o -name "*.js" -o -name "*.ts" -o -name "*.go" -o -name "*.rs" -o -name "*.java" -o -name "*.rb" -o -name "*.php" \) \
-              -not -path './.git/*' -not -name "main.py" -not -name "app.py" -not -name "index.ts" -not -name "server.ts" -not -name "main.go" -not -name "main.rs" \
-              | head -15 | while IFS= read -r f; do
-                echo "=== $f ==="
-                head -n 10 "$f"
-              done
-          } > /tmp/repo_context.txt
-
-          # Trim to 12000 bytes while preserving whole lines
-          head -c 12000 /tmp/repo_context.txt > /tmp/repo_context_trimmed.txt
-
-          delimiter="EOF_$(date +%s)_$$"
-          {
-            echo "content<<${delimiter}"
-            cat /tmp/repo_context_trimmed.txt
-            echo "${delimiter}"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Generate raw Containerfile (directly from full context)
-        id: detect
-        uses: ai-action/ollama-action@master
+      - name: Detect containerfile
+        uses: plutoploy/auto-containerisation@main
         with:
-          model: deepseek-coder-v2:16b
-          prompt: |
-            You are an expert DevOps engineer. Below is a snapshot of a codebase.
-            Analyse it carefully and produce a Containerfile that correctly builds and runs this application.
+          github-token: ${{ github.token }}
+          containerfile: ./Containerfile
 
-            CODEBASE CONTEXT:
-            ${{ steps.context.outputs.content }}
-
-            IMPORTANT RULES:
-            - Use the most appropriate base image based on the detected language/framework.
-            - Include a CMD or ENTRYPOINT instruction.
-            - Do NOT include any markdown fences, explanations, or commentary.
-            - Output ONLY the raw Containerfile contents.
-
-      - name: Clean the AI response
-        id: clean
+      - name: Install buildah and podman
         run: |
-          # Extract everything from the first FROM line onward, then strip any ``` fences
-          clean=$(echo "$RESPONSE" | sed -n '/^FROM/,$p' | sed '/^```/d')
-          if ! grep -qE '^FROM ' <<< "$clean"; then
-            echo "ERROR: AI response missing FROM instruction. Raw output:"
-            echo "$RESPONSE"
-            exit 1
-          fi
-          echo "$clean" > Containerfile
-        env:
-          RESPONSE: ${{ steps.detect.outputs.content }}
-
-      - name: Validate Containerfile structure
-        run: |
-          echo "--- Containerfile ---"
-          cat Containerfile
-          echo "--------------------"
-          grep -qE '^FROM ' Containerfile || { echo "ERROR: missing FROM"; exit 1; }
-          grep -qE '^(CMD|ENTRYPOINT)' Containerfile || { echo "ERROR: missing CMD/ENTRYPOINT"; exit 1; }
-
-      - name: Ensure .dockerignore
-        run: |
-          if [ ! -f .dockerignore ]; then
-            cat > .dockerignore << 'EOF'
-          .git
-          .github
-          node_modules
-          __pycache__
-          .venv
-          venv
-          .mypy_cache
-          .pytest_cache
-          .ruff_cache
-          *.pyc
-          .env
-          .env.*
-          !.env.example
-          target
-          Cargo.lock
-          *.tar.gz
-          .DS_Store
-          EOF
-            echo "Created .dockerignore"
-          else
-            echo ".dockerignore already exists – not overwriting."
+          if ! command -v buildah &> /dev/null || ! command -v podman &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y buildah podman
           fi
 
-      - name: Commit and push directly
-        run: |
-          git config user.name "plutoploy[bot]"
-          git config user.email "plutoploy[bot]@users.noreply.github.com"
-          git add Containerfile .dockerignore
-          if git diff --staged --quiet; then
-            echo "No changes to commit."
-          else
-            git commit -m "chore: inject Containerfile and .dockerignore via plutoploy bot"
-            git push
-          fi
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+      - name: Build image using Buildah
+        id: build-image
+        uses: redhat-actions/buildah-build@master
+        with:
+          image: ghcr.io/${{ github.repository }}
+          tags: latest ${{ github.sha }} ${{ github.ref_name }}
+          containerfiles: |
+            ./Containerfile
+
+      - name: Log in to GitHub Container Registry
+        uses: redhat-actions/podman-login@main
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Push to GHCR
+        id: push
+        uses: redhat-actions/push-to-registry@main
+        with:
+          image: ${{ steps.build-image.outputs.image }}
+          tags: ${{ steps.build-image.outputs.tags }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@main
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
