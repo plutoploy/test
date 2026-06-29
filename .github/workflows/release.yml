@@ -32,7 +32,7 @@ jobs:
 
       - name: Build image using Buildah
         id: build-image
-        uses: redhat-actions/buildah-build@master
+        uses: redhat-actions/buildah-build@main
         with:
           image: ghcr.io/${{ github.repository }}
           tags: latest ${{ github.sha }} ${{ github.ref_name }}
