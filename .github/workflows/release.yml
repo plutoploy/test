@@ -20,9 +20,6 @@ jobs:
 
       - name: Detect containerfile
         uses: plutoploy/auto-containerisation@main
-        with:
-          github-token: ${{ github.token }}
-          containerfile: ./Containerfile
 
       - name: Install buildah and podman
         run: |
